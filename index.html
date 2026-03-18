@@ -1,0 +1,1798 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DLSS 5 Tonemapping Slider</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #000;
+    --text: #fff;
+    --text-dim: rgba(255,255,255,0.45);
+    --glass: rgba(0,0,0,0.55);
+    --glass-border: rgba(255,255,255,0.08);
+
+    /* Design tokens */
+    --font-ui: 13px;
+    --font-credit: 11px;
+    --pill-pad: 7px 16px;
+    --pill-radius: 20px;
+    --bar-height: 48px;
+    --bar-pad: 0 22px;
+    --bar-radius: 24px;
+    --thumb-size: 20px;
+    --dot-size: 8px;
+    --handle-size: 40px;
+    --bar-gap: 16px;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', system-ui, sans-serif;
+    overflow: hidden;
+    height: 100vh;
+    width: 100vw;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
+  /*Viewport (sized to image aspect ratio) */
+  .viewport {
+    position: relative;
+    overflow: hidden;
+  }
+
+  /*Zoomable image container */
+  .image-pan {
+    position: absolute;
+    inset: 0;
+    transform-origin: 0 0;
+    will-change: transform;
+  }
+  .image-pan.smooth { transition: transform 0.35s cubic-bezier(0.25, 0.1, 0.25, 1); }
+
+  .image-pan canvas {
+    position: absolute;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+  }
+  #canvasRight { clip-path: none; }
+
+  /*Divider (lives in HUD, not zoom layer) */
+  .divider {
+    position: absolute;
+    top: 0; bottom: 0;
+    left: 50%;
+    width: 2px;
+    background: rgba(255,255,255,0.85);
+    z-index: 11;
+    pointer-events: none;
+    opacity: 0.35;
+    transition: opacity 0.2s;
+  }
+  .divider.hidden { opacity: 0; pointer-events: none; transition: none; }
+  .divider.active { opacity: 1; }
+  .divider:not(.hidden):hover { opacity: 0.8; }
+  .divider-handle {
+    position: absolute;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    width: var(--handle-size); height: var(--handle-size);
+    border-radius: 50%;
+    background: var(--glass);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1.5px solid rgba(255,255,255,0.25);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    pointer-events: auto;
+    cursor: col-resize;
+  }
+  .divider.hidden .divider-handle { pointer-events: none; }
+  .divider-handle::before, .divider-handle::after {
+    content: '';
+    width: 0; height: 0;
+  }
+  .divider-handle::before {
+    border: 5px solid transparent;
+    border-right-color: rgba(255,255,255,0.8);
+  }
+  .divider-handle::after {
+    border: 5px solid transparent;
+    border-left-color: rgba(255,255,255,0.8);
+  }
+
+  /*Compare toggle */
+  .compare-toggle {
+    position: absolute;
+    top: 14px;
+    left: 14px;
+    padding: var(--pill-pad);
+    background: var(--glass);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid var(--glass-border);
+    border-radius: var(--pill-radius);
+    font-size: var(--font-ui);
+    font-weight: 500;
+    letter-spacing: 0.04em;
+    color: rgba(255,255,255,0.6);
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .compare-toggle:hover { background: rgba(255,255,255,0.12); color: white; }
+  .compare-toggle.active {
+    background: rgba(255,255,255,0.15);
+    color: white;
+    border-color: rgba(255,255,255,0.2);
+  }
+
+  /*HUD (not affected by zoom) */
+  .hud { position: absolute; inset: 0; pointer-events: none; z-index: 10; }
+  .hud > * { pointer-events: auto; cursor: default; }
+
+
+  /*Gallery nav */
+  .gallery-nav {
+    position: absolute;
+    top: 14px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    background: var(--glass);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border: 1px solid var(--glass-border);
+    border-radius: 20px;
+    padding: 10px 16px;
+    transition: opacity 0.2s;
+  }
+  .gallery-nav.single { display: none; }
+
+  #galleryDots {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 0 6px;
+  }
+
+  .gallery-dot {
+    width: var(--dot-size); height: var(--dot-size);
+    border-radius: 50%;
+    background: rgba(255,255,255,0.25);
+    border: none;
+    cursor: pointer;
+    padding: 0;
+    transition: background 0.2s, box-shadow 0.2s;
+    flex-shrink: 0;
+  }
+  .gallery-dot:hover {
+    background: rgba(255,255,255,0.7);
+  }
+  .gallery-dot.active {
+    background: white;
+    box-shadow: 0 0 6px rgba(255,255,255,0.3);
+  }
+
+  .gallery-arrow {
+    background: none;
+    border: none;
+    color: rgba(255,255,255,0.23);
+    cursor: pointer;
+    padding: 0 2px;
+    display: flex;
+    align-items: center;
+    transition: color 0.15s;
+  }
+  .gallery-arrow svg { display: block; }
+  .gallery-arrow:hover { color: rgba(255,255,255,0.78); }
+  .gallery-arrow:disabled {
+    color: rgba(255,255,255,0.14);
+    opacity: 0.55;
+    cursor: default;
+    pointer-events: none;
+  }
+
+  /*Zoom indicator */
+  .zoom-badge {
+    position: absolute;
+    top: 14px;
+    right: 14px;
+    padding: var(--pill-pad);
+    background: var(--glass);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid var(--glass-border);
+    border-radius: var(--pill-radius);
+    font-size: var(--font-ui);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    color: rgba(255,255,255,0.7);
+    opacity: 0;
+    transition: opacity 0.3s;
+    pointer-events: none;
+  }
+  .zoom-badge.visible { opacity: 1; }
+
+  /* Immersed state: chrome fades when zoomed in */
+  .compare-toggle,
+  .slider-bar,
+  .value-badge,
+  .gallery-nav {
+    transition: opacity 0.2s;
+  }
+  .hud.immersed .compare-toggle,
+  .hud.immersed .slider-bar {
+    opacity: 0.4;
+  }
+  .hud.immersed .value-badge,
+  .hud.immersed .gallery-nav {
+    opacity: 0.65;
+  }
+  .hud.immersed .compare-toggle:hover,
+  .hud.immersed .slider-bar:hover,
+  .hud.immersed .gallery-nav:hover {
+    opacity: 1;
+  }
+
+  /*Floating slider bar */
+  .slider-bar {
+    position: absolute;
+    bottom: 16px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: calc(100% - 32px);
+    max-width: 560px;
+    height: var(--bar-height);
+    background: var(--glass);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border: 1px solid var(--glass-border);
+    border-radius: var(--bar-radius);
+    display: flex;
+    align-items: center;
+    padding: var(--bar-pad);
+    gap: var(--bar-gap);
+  }
+
+  .slider-endpoint {
+    font-size: var(--font-ui);
+    font-weight: 500;
+    color: var(--text-dim);
+    white-space: nowrap;
+    width: 72px;         /* equal fixed width for perfect centering */
+    flex-shrink: 0;
+  }
+  .slider-endpoint.right { text-align: right; }
+
+  .slider-track {
+    flex: 1;
+    position: relative;
+    display: flex;
+    align-items: center;
+  }
+
+  /* Center notch marker for "Lighting Only" */
+  .slider-notch {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    width: 2px;
+    height: 14px;
+    background: rgba(255,255,255,0.2);
+    border-radius: 1px;
+    pointer-events: none;
+    z-index: 1;
+  }
+
+  input[type="range"] {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+    height: 4px;
+    border-radius: 2px;
+    background: rgba(255,255,255,0.1);
+    outline: none;
+    cursor: pointer;
+    position: relative;
+    z-index: 2;
+  }
+  input[type="range"]:disabled {
+    opacity: 0.45;
+    cursor: wait;
+  }
+  /* During Space preview: hide the real input, show a clean CSS replica */
+  input[type="range"].space-previewing {
+    opacity: 0 !important;
+    pointer-events: none;
+  }
+  .slider-track.space-previewing::before {
+    content: '';
+    position: absolute;
+    left: 0; right: 0;
+    top: 50%;
+    height: 4px;
+    transform: translateY(-50%);
+    background: rgba(255,255,255,0.1);
+    border-radius: 2px;
+    z-index: 2;
+  }
+  .slider-track.space-previewing::after {
+    content: '';
+    position: absolute;
+    left: var(--preview-thumb-pos, 50%);
+    top: 50%;
+    width: var(--thumb-size); height: var(--thumb-size);
+    transform: translate(-50%, -50%);
+    border-radius: 50%;
+    background: white;
+    box-shadow: 0 1px 6px rgba(0,0,0,0.4);
+    z-index: 3;
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: var(--thumb-size); height: var(--thumb-size);
+    border-radius: 50%;
+    background: white;
+    box-shadow: 0 1px 6px rgba(0,0,0,0.4);
+    cursor: grab;
+    transition: transform 0.15s, box-shadow 0.15s;
+  }
+  input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.2); }
+  /* Snap pulse (toggled by JS when hitting key positions) */
+  input[type="range"].snap-pulse::-webkit-slider-thumb {
+    transform: scale(1.35);
+    box-shadow: 0 0 12px rgba(255,255,255,0.4);
+  }
+  input[type="range"]::-webkit-slider-thumb:active { cursor: grabbing; }
+  input[type="range"]::-moz-range-thumb {
+    width: var(--thumb-size); height: var(--thumb-size);
+    border-radius: 50%;
+    background: white;
+    border: none;
+    box-shadow: 0 1px 6px rgba(0,0,0,0.4);
+    cursor: grab;
+  }
+
+  /*Floating value badge (bottom-right of image) */
+  .value-badge {
+    position: absolute;
+    bottom: 72px;
+    right: 12px;
+    padding: var(--pill-pad);
+    background: var(--glass);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid var(--glass-border);
+    border-radius: var(--pill-radius);
+    transition: opacity 0.2s;
+    font-size: var(--font-ui);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    color: rgba(255,255,255,0.85);
+    pointer-events: none;
+    white-space: nowrap;
+  }
+
+  /*Hint */
+  .hint {
+    position: absolute;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    text-align: center;
+    pointer-events: none;
+    z-index: 20;
+    transition: opacity 0.6s;
+  }
+  .hint.hidden { opacity: 0; }
+  .hint p {
+    font-size: var(--font-ui);
+    color: rgba(255,255,255,0.5);
+    margin-bottom: 8px;
+    line-height: 1.6;
+  }
+  .hint .key {
+    display: inline-block;
+    padding: 3px 8px;
+    background: rgba(255,255,255,0.1);
+    border-radius: 4px;
+    font-size: var(--font-ui);
+    font-weight: 600;
+  }
+
+  /*Loading bar */
+  .loading-overlay {
+    position: fixed;
+    inset: 0;
+    background: var(--bg);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+    transition: opacity 0.5s;
+  }
+  .loading-overlay.hidden { opacity: 0; pointer-events: none; }
+  .loading-bar {
+    position: absolute;
+    top: 0; left: 0;
+    height: 2px;
+    background: rgba(255,255,255,0.5);
+    width: 0%;
+    transition: width 0.3s ease-out;
+  }
+  .loading-text {
+    font-size: var(--font-ui);
+    color: var(--text-dim);
+  }
+  .overlay-action {
+    margin-top: 18px;
+    padding: 9px 16px;
+    border: 1px solid var(--glass-border);
+    border-radius: 999px;
+    background: rgba(255,255,255,0.08);
+    color: white;
+    font: inherit;
+    cursor: pointer;
+  }
+  .overlay-action:hover { background: rgba(255,255,255,0.14); }
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+  button:focus-visible,
+  input[type="range"]:focus-visible,
+  [role="slider"]:focus-visible {
+    outline: 2px solid rgba(255,255,255,0.95);
+    outline-offset: 3px;
+  }
+
+  /*Credit (bottom-left, hover-to-show) */
+  .credit {
+    position: absolute;
+    bottom: 6px;
+    left: 12px;
+    font-size: var(--font-credit);
+    color: rgba(255,255,255,0);
+    letter-spacing: 0.03em;
+    pointer-events: none;
+    z-index: 10;
+    white-space: nowrap;
+    transition: color 0.3s;
+  }
+  .viewport:hover .credit { color: rgba(255,255,255,0.22); }
+  .credit-name { color: rgba(255,255,255,0); transition: color 0.3s; text-decoration: none; pointer-events: auto; cursor: pointer; }
+  .viewport:hover .credit-name { color: rgba(255,255,255,0.38); }
+  .credit-name:hover { color: rgba(255,255,255,0.6) !important; }
+
+  /*Touch / mobile devices */
+  @media (pointer: coarse) {
+    :root {
+      --font-ui: 14px;
+      --font-credit: 12px;
+      --pill-pad: 10px 18px;
+      --bar-height: 54px;
+      --bar-pad: 0 18px;
+      --bar-radius: 27px;
+      --thumb-size: 28px;
+      --dot-size: 12px;
+      --handle-size: 48px;
+      --bar-gap: 12px;
+    }
+    .hint {
+      top: auto;
+      bottom: 90px;
+      transform: translateX(-50%);
+      background: var(--glass);
+      border: 1px solid var(--glass-border);
+      border-radius: 16px;
+      padding: 10px 14px;
+      max-width: calc(100% - 24px);
+    }
+    .desktop-hint { display: none !important; }
+    .touch-hint-copy { display: block !important; }
+    .gallery-dot { margin: 0 2px; }   /* more spacing for fat fingers */
+    #galleryDots { gap: 14px; }
+    input[type="range"] { height: 6px; }
+    .slider-endpoint { width: 62px; }
+    /* Credit always visible on touch (no hover) */
+    .credit { color: rgba(255,255,255,0.18); }
+    .credit-name { color: rgba(255,255,255,0.3); }
+  }
+
+  /*Small screens */
+  @media (max-width: 480px) {
+    :root {
+      --bar-gap: 10px;
+    }
+    .slider-bar { max-width: none; }
+    .compare-toggle { top: 10px; left: 10px; }
+    .gallery-nav { top: 10px; }
+    .value-badge { bottom: 66px; right: 10px; }
+  }
+  .desktop-hint { display: block; }
+  .touch-hint-copy { display: none; }
+</style>
+</head>
+<body>
+
+<div class="loading-overlay" id="loadingOverlay">
+  <div>
+    <div class="loading-bar" id="loadingBar"></div>
+    <div class="loading-text" id="loadingText">Loading…</div>
+    <button class="overlay-action" id="retryButton" type="button" hidden>Retry merge</button>
+  </div>
+</div>
+
+<div class="viewport" id="viewport">
+  <div class="credit">Tool by <a class="credit-name" href="https://tekkus.ai" target="_blank" rel="noopener">tekkusai</a> · Edits by /u/Veedrac</div>
+
+  <!-- Zoomable layer -->
+  <div class="image-pan" id="imagePan">
+    <canvas id="canvasLeft"></canvas>
+    <canvas id="canvasRight"></canvas>
+  </div>
+
+  <!-- Divider (in viewport-space, not affected by zoom) -->
+  <div class="divider hidden" id="divider">
+    <div class="divider-handle" id="dividerHandle"></div>
+  </div>
+
+  <!-- HUD (stays fixed over zoom) -->
+  <div class="hud">
+    <button class="compare-toggle" id="compareToggle" type="button" aria-pressed="false">Compare</button>
+
+    <div class="gallery-nav" id="galleryNav">
+      <button class="gallery-arrow" id="prevBtn" type="button" aria-label="Previous image"><svg width="6" height="10" viewBox="0 0 6 10" fill="none"><path d="M5 1L1 5l4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+      <div id="galleryDots"></div>
+      <button class="gallery-arrow" id="nextBtn" type="button" aria-label="Next image"><svg width="6" height="10" viewBox="0 0 6 10" fill="none"><path d="M1 1l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+    </div>
+
+    <div class="zoom-badge" id="zoomBadge">1.0x</div>
+    <div class="value-badge" id="valueBadge">Lighting Only</div>
+
+    <div class="hint" id="hint">
+      <p class="desktop-hint">Scroll to zoom · <span class="key">Space</span> native · <span class="key">C</span> compare</p>
+      <p class="touch-hint-copy">Pinch to zoom · drag image to pan · drag divider to compare · double-tap to reset</p>
+    </div>
+
+    <div class="slider-bar">
+      <span class="slider-endpoint">Native</span>
+      <div class="slider-track">
+        <div class="slider-notch"></div>
+        <label class="sr-only" for="tonemapSlider">Tonemapping comparison</label>
+        <input type="range" id="tonemapSlider" min="-100" max="100" value="0" step="1" aria-label="Tonemapping comparison">
+      </div>
+      <span class="slider-endpoint right">DLSS 5</span>
+    </div>
+  </div>
+</div>
+
+<script>
+// --------------------------------------------------------------------------
+// Gallery manifest
+// --------------------------------------------------------------------------
+
+const GALLERY = [
+  { name: 'Image 1', path: 'Assets/Image 1', original: 'Original1.webp', dlss: 'DLSS1.webp' },
+  { name: 'Image 2', path: 'Assets/Image 2', original: 'Native2.webp', dlss: 'DLSS2.webp' },
+  { name: 'Image 3', path: 'Assets/Image 3', original: 'Native3.webp', dlss: 'DLSS3.webp' },
+  { name: 'Image 4', path: 'Assets/Image 4', original: 'Native4.webp', dlss: 'DLSS4.webp' },
+];
+
+// --------------------------------------------------------------------------
+// Utilities
+// --------------------------------------------------------------------------
+
+function loadImage(src) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = reject;
+    img.src = src;
+  });
+}
+
+function getPixels(img) {
+  const c = document.createElement('canvas');
+  c.width = img.naturalWidth;
+  c.height = img.naturalHeight;
+  const ctx = c.getContext('2d');
+  ctx.drawImage(img, 0, 0);
+  return ctx.getImageData(0, 0, c.width, c.height);
+}
+
+function toBitmap(imageData) {
+  return createImageBitmap(imageData);
+}
+
+// --------------------------------------------------------------------------
+// Merge cache (keyed by gallery index)
+// --------------------------------------------------------------------------
+
+const mergeCache = {};
+
+function closeBitmap(bitmap) {
+  if (bitmap && typeof bitmap.close === 'function') {
+    try { bitmap.close(); } catch {}
+  }
+}
+
+function closeCacheEntry(entry) {
+  if (!entry) return;
+  const seen = new Set();
+  [entry.bmpOrig, entry.bmpMerged, entry.bmpDlss].forEach(bitmap => {
+    if (bitmap && !seen.has(bitmap)) {
+      seen.add(bitmap);
+      closeBitmap(bitmap);
+    }
+  });
+}
+
+function disposeStateBitmaps() {
+  closeCacheEntry(state);
+  state.bmpOrig = null;
+  state.bmpMerged = null;
+  state.bmpDlss = null;
+}
+
+// --------------------------------------------------------------------------
+// IndexedDB persistence for merge results
+// --------------------------------------------------------------------------
+
+const DB_NAME = 'dlss5-tool';
+const DB_STORE = 'merges';
+const DB_VERSION = 1;
+
+function logStorageWarning(action, err) {
+  console.warn(`IndexedDB ${action} failed:`, err);
+}
+
+function openDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    req.onupgradeneeded = () => req.result.createObjectStore(DB_STORE);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function dbGet(key) {
+  try {
+    const db = await openDB();
+    return new Promise((resolve) => {
+      const tx = db.transaction(DB_STORE, 'readonly');
+      const req = tx.objectStore(DB_STORE).get(key);
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => {
+        logStorageWarning(`read for ${key}`, req.error);
+        resolve(null);
+      };
+    });
+  } catch (err) {
+    logStorageWarning(`open for read ${key}`, err);
+    return null;
+  }
+}
+
+async function dbPut(key, value) {
+  try {
+    const db = await openDB();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(DB_STORE, 'readwrite');
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error('IndexedDB write transaction failed'));
+      tx.onabort = () => reject(tx.error || new Error('IndexedDB write transaction aborted'));
+      tx.objectStore(DB_STORE).put(value, key);
+    });
+  } catch (err) {
+    logStorageWarning(`write for ${key}`, err);
+  }
+}
+
+// --------------------------------------------------------------------------
+// State
+// --------------------------------------------------------------------------
+
+const state = {
+  // Image data
+  origPixels: null, dlssPixels: null, mergedPixels: null,
+  imgW: 0, imgH: 0,
+
+  // Bitmaps for drawing
+  bmpOrig: null, bmpMerged: null, bmpDlss: null,
+
+  // Controls
+  sliderValue: 0,    // -100 to 100
+  splitPos: 0.5,
+  comparing: false,
+  draggingDivider: false,
+
+  // Zoom
+  zoom: 1,
+  panX: 0, panY: 0,
+  panning: false,
+  panStartX: 0, panStartY: 0,
+  panBaseX: 0, panBaseY: 0,
+
+  // Gallery
+  currentImage: 0,
+  ready: false,
+  mergeReady: false,  // true only after merge worker completes
+};
+
+// Track in-flight worker so we can cancel on gallery switch
+let activeWorker = null;
+let loadGeneration = 0;
+
+// --------------------------------------------------------------------------
+// DOM
+// --------------------------------------------------------------------------
+
+const viewport = document.getElementById('viewport');
+const imagePan = document.getElementById('imagePan');
+const canvasLeft = document.getElementById('canvasLeft');
+const canvasRight = document.getElementById('canvasRight');
+const ctxLeft = canvasLeft.getContext('2d');
+const ctxRight = canvasRight.getContext('2d');
+const dividerEl = document.getElementById('divider');
+const dividerHandle = document.getElementById('dividerHandle');
+const slider = document.getElementById('tonemapSlider');
+const valueBadge = document.getElementById('valueBadge');
+const zoomBadge = document.getElementById('zoomBadge');
+const hud = document.querySelector('.hud');
+const hint = document.getElementById('hint');
+const galleryNav = document.getElementById('galleryNav');
+const galleryDots = document.getElementById('galleryDots');
+const prevBtn = document.getElementById('prevBtn');
+const nextBtn = document.getElementById('nextBtn');
+const compareToggle = document.getElementById('compareToggle');
+const loadingOverlay = document.getElementById('loadingOverlay');
+const loadingBar = document.getElementById('loadingBar');
+const loadingText = document.getElementById('loadingText');
+const retryButton = document.getElementById('retryButton');
+const prefersCoarsePointer = window.matchMedia('(pointer: coarse)').matches;
+
+// --------------------------------------------------------------------------
+// Layout
+// --------------------------------------------------------------------------
+
+function layout() {
+  if (!state.imgW) return;
+  const ar = state.imgW / state.imgH;
+  const winW = window.innerWidth;
+  const winH = window.innerHeight;
+
+  let w, h;
+  if (winW / winH > ar) { h = winH; w = h * ar; }
+  else { w = winW; h = w / ar; }
+  w = Math.round(w);
+  h = Math.round(h);
+
+  viewport.style.width = w + 'px';
+  viewport.style.height = h + 'px';
+  canvasLeft.width = canvasRight.width = w;
+  canvasLeft.height = canvasRight.height = h;
+
+  if (state.ready) render();
+}
+window.addEventListener('resize', () => { layout(); applyZoom(); });
+
+// --------------------------------------------------------------------------
+// Rendering
+// --------------------------------------------------------------------------
+
+let renderPending = false;
+function render() {
+  if (!state.ready) return;
+  if (renderPending) return;
+  renderPending = true;
+  requestAnimationFrame(() => {
+    renderPending = false;
+    const w = canvasLeft.width, h = canvasLeft.height;
+
+    ctxLeft.clearRect(0, 0, w, h);
+    ctxRight.clearRect(0, 0, w, h);
+
+    // Always draw native on left (needed for Space flash + compare)
+    if (state.bmpOrig) ctxLeft.drawImage(state.bmpOrig, 0, 0, w, h);
+    drawRightImage(w, h);
+
+    if (state.comparing) {
+      // Convert screen-space split to image-space clip percentage
+      const vpW = viewport.getBoundingClientRect().width;
+      const screenX = state.splitPos * vpW;
+      const imageX = (screenX - state.panX) / state.zoom;
+      const clipPct = Math.max(0, Math.min(100, (imageX / vpW) * 100));
+
+      canvasRight.style.clipPath = `inset(0 0 0 ${clipPct.toFixed(2)}%)`;
+      dividerEl.style.left = (state.splitPos * 100).toFixed(2) + '%';
+
+      // Fade value badge when divider is near it (right side)
+      valueBadge.style.opacity = state.splitPos > 0.85 ? '0' : '';
+    } else {
+      canvasRight.style.clipPath = 'none';
+      valueBadge.style.opacity = '';
+    }
+  });
+}
+
+function drawRightImage(w, h) {
+  const v = state.sliderValue;
+  ctxRight.globalAlpha = 1;
+
+  if (!state.mergeReady) {
+    const fallbackBitmap = v <= -100 || !state.bmpDlss ? state.bmpOrig : state.bmpDlss;
+    if (fallbackBitmap) ctxRight.drawImage(fallbackBitmap, 0, 0, w, h);
+    return;
+  }
+
+  if (v <= -100 || !state.bmpMerged) {
+    if (state.bmpOrig) ctxRight.drawImage(state.bmpOrig, 0, 0, w, h);
+    return;
+  }
+
+  if (v < 0) {
+    const t = (v + 100) / 100;
+    if (state.bmpOrig) ctxRight.drawImage(state.bmpOrig, 0, 0, w, h);
+    if (state.bmpMerged) {
+      ctxRight.globalAlpha = t;
+      ctxRight.drawImage(state.bmpMerged, 0, 0, w, h);
+      ctxRight.globalAlpha = 1;
+    }
+    return;
+  }
+
+  if (v === 0 || !state.bmpDlss) {
+    if (state.bmpMerged) ctxRight.drawImage(state.bmpMerged, 0, 0, w, h);
+    return;
+  }
+
+  if (v < 100) {
+    const t = v / 100;
+    if (state.bmpMerged) ctxRight.drawImage(state.bmpMerged, 0, 0, w, h);
+    if (state.bmpDlss) {
+      ctxRight.globalAlpha = t;
+      ctxRight.drawImage(state.bmpDlss, 0, 0, w, h);
+      ctxRight.globalAlpha = 1;
+    }
+    return;
+  }
+
+  if (state.bmpDlss) ctxRight.drawImage(state.bmpDlss, 0, 0, w, h);
+}
+
+function updateSliderLabel() {
+  const v = state.sliderValue;
+  if (!state.mergeReady) {
+    if (v <= -100) valueBadge.textContent = 'Native';
+    else if (v >= 100) valueBadge.textContent = 'DLSS 5';
+    else valueBadge.textContent = 'Preparing Lighting Only…';
+    return;
+  }
+  if (v <= -100) valueBadge.textContent = 'Native';
+  else if (v < 0) valueBadge.textContent = `${v + 100}% Lighting`;
+  else if (v === 0) valueBadge.textContent = 'Lighting Only';
+  else if (v < 100) valueBadge.textContent = `${v}% Tonemapping`;
+  else valueBadge.textContent = 'DLSS 5';
+}
+
+// --------------------------------------------------------------------------
+// Slider
+// --------------------------------------------------------------------------
+
+function snapSlider(v) {
+  const snaps = [-100, 0, 100];
+  const threshold = 4;
+  for (const s of snaps) {
+    if (Math.abs(v - s) <= threshold) return s;
+  }
+  return v;
+}
+
+let lastSnapped = 0;
+let sliderRafPending = false;
+slider.addEventListener('input', () => {
+  const raw = parseInt(slider.value);
+  const snapped = snapSlider(raw);
+  state.sliderValue = snapped;
+  if (snapped !== raw) slider.value = snapped;
+
+  // Snap pulse: brief scale bump on key positions
+  if ([-100, 0, 100].includes(snapped) && snapped !== lastSnapped) {
+    slider.classList.add('snap-pulse');
+    setTimeout(() => slider.classList.remove('snap-pulse'), 180);
+  }
+  lastSnapped = snapped;
+
+  updateSliderLabel();
+  dismissHint();
+  // Debounce: collapse rapid slider drags to one update per frame
+  if (state.ready && !sliderRafPending) {
+    sliderRafPending = true;
+    requestAnimationFrame(() => {
+      sliderRafPending = false;
+      if (state.ready) render();
+    });
+  }
+});
+
+slider.addEventListener('pointerup', () => {
+  requestAnimationFrame(() => {
+    if (document.activeElement === slider && !slider.matches(':focus-visible')) {
+      slider.blur();
+    }
+  });
+});
+
+// --------------------------------------------------------------------------
+// Divider
+// --------------------------------------------------------------------------
+
+// Compare toggle
+function setComparing(on) {
+  state.comparing = on;
+  if (!on) {
+    state.draggingDivider = false;
+    dividerEl.classList.remove('active');
+  }
+  compareToggle.classList.toggle('active', on);
+  compareToggle.setAttribute('aria-pressed', String(on));
+  dividerEl.classList.toggle('hidden', !on);
+  dividerHandle.tabIndex = on ? 0 : -1;
+  dividerHandle.setAttribute('aria-hidden', String(!on));
+  if (state.ready) render();
+}
+
+compareToggle.addEventListener('click', () => {
+  setComparing(!state.comparing);
+  compareToggle.blur();
+  dismissHint();
+});
+
+dividerHandle.addEventListener('mousedown', e => {
+  if (!state.comparing) return;
+  e.stopPropagation();
+  state.draggingDivider = true;
+  dividerEl.classList.add('active');
+  moveDivider(e);
+  dismissHint();
+});
+
+viewport.addEventListener('mousedown', e => {
+  if (e.target.closest('.slider-bar') || e.target.closest('.gallery-nav') || e.target.closest('.compare-toggle')) return;
+  if (state.zoom > 1.01) {
+    // Start panning
+    state.panning = true;
+    state.panStartX = e.clientX;
+    state.panStartY = e.clientY;
+    state.panBaseX = state.panX;
+    state.panBaseY = state.panY;
+    viewport.style.cursor = 'grabbing';
+  } else if (state.comparing) {
+    // Move divider
+    state.draggingDivider = true;
+    dividerEl.classList.add('active');
+    moveDivider(e);
+  }
+  dismissHint();
+});
+
+window.addEventListener('mousemove', e => {
+  if (state.draggingDivider) moveDivider(e);
+  if (state.panning) {
+    state.panX = state.panBaseX + (e.clientX - state.panStartX);
+    state.panY = state.panBaseY + (e.clientY - state.panStartY);
+    clampPan();
+    applyZoom();
+    updateImmersed();
+  }
+});
+
+window.addEventListener('mouseup', () => {
+  if (state.draggingDivider) dividerHandle.blur();
+  state.draggingDivider = false;
+  dividerEl.classList.remove('active');
+  if (state.panning) {
+    state.panning = false;
+    viewport.style.cursor = state.zoom > 1.01 ? 'grab' : '';
+  }
+});
+
+// Touch
+dividerHandle.addEventListener('touchstart', e => {
+  if (!state.comparing) return;
+  e.stopPropagation();
+  state.draggingDivider = true;
+  dividerEl.classList.add('active');
+  moveDivider(e.touches[0]);
+  dismissHint();
+});
+
+// Pinch-to-zoom state
+let pinching = false, pinchStartDist = 0, pinchStartZoom = 1;
+let pinchCenterX = 0, pinchCenterY = 0;
+
+function touchDist(t) {
+  const dx = t[0].clientX - t[1].clientX;
+  const dy = t[0].clientY - t[1].clientY;
+  return Math.sqrt(dx * dx + dy * dy);
+}
+
+viewport.addEventListener('touchstart', e => {
+  if (e.target.closest('.slider-bar') || e.target.closest('.gallery-nav') || e.target.closest('.compare-toggle')) return;
+
+  if (e.touches.length === 2) {
+    // Pinch start
+    pinching = true;
+    state.draggingDivider = false;
+    state.panning = false;
+    pinchStartDist = touchDist(e.touches);
+    pinchStartZoom = state.zoom;
+    const rect = viewport.getBoundingClientRect();
+    pinchCenterX = (e.touches[0].clientX + e.touches[1].clientX) / 2 - rect.left;
+    pinchCenterY = (e.touches[0].clientY + e.touches[1].clientY) / 2 - rect.top;
+    dismissHint();
+    return;
+  }
+
+  if (state.zoom > 1.01) {
+    state.panning = true;
+    state.panStartX = e.touches[0].clientX;
+    state.panStartY = e.touches[0].clientY;
+    state.panBaseX = state.panX;
+    state.panBaseY = state.panY;
+  } else if (state.comparing) {
+    state.draggingDivider = true;
+    dividerEl.classList.add('active');
+    moveDivider(e.touches[0]);
+  }
+  dismissHint();
+}, { passive: true });
+
+viewport.addEventListener('touchmove', e => {
+  if (pinching && e.touches.length === 2) {
+    e.preventDefault();
+    const dist = touchDist(e.touches);
+    const oldZoom = state.zoom;
+    const newZoom = Math.max(1, Math.min(10, pinchStartZoom * (dist / pinchStartDist)));
+    state.panX = pinchCenterX - (pinchCenterX - state.panX) * (newZoom / oldZoom);
+    state.panY = pinchCenterY - (pinchCenterY - state.panY) * (newZoom / oldZoom);
+    state.zoom = newZoom;
+    clampPan();
+    applyZoom();
+    showZoomBadge();
+    return;
+  }
+  if (state.draggingDivider) { e.preventDefault(); moveDivider(e.touches[0]); }
+  if (state.panning) {
+    e.preventDefault();
+    state.panX = state.panBaseX + (e.touches[0].clientX - state.panStartX);
+    state.panY = state.panBaseY + (e.touches[0].clientY - state.panStartY);
+    clampPan();
+    applyZoom();
+  }
+}, { passive: false });
+
+window.addEventListener('touchend', () => {
+  if (state.draggingDivider) dividerHandle.blur();
+  state.draggingDivider = false;
+  state.panning = false;
+  pinching = false;
+  dividerEl.classList.remove('active');
+});
+
+function moveDivider(e) {
+  const rect = viewport.getBoundingClientRect();
+  state.splitPos = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+  dividerHandle.setAttribute('aria-valuenow', String(Math.round(state.splitPos * 100)));
+  render();
+}
+
+// --------------------------------------------------------------------------
+// Zoom
+// --------------------------------------------------------------------------
+
+let zoomFadeTimer;
+
+viewport.addEventListener('wheel', e => {
+  if (e.target.closest('.slider-bar')) return;
+  e.preventDefault();
+
+  const rect = viewport.getBoundingClientRect();
+  const cx = e.clientX - rect.left;
+  const cy = e.clientY - rect.top;
+
+  const oldZoom = state.zoom;
+  const factor = e.deltaY > 0 ? 0.92 : 1.08;
+  const newZoom = Math.max(1, Math.min(10, oldZoom * factor));
+
+  // Adjust pan to keep cursor pixel stable
+  state.panX = cx - (cx - state.panX) * (newZoom / oldZoom);
+  state.panY = cy - (cy - state.panY) * (newZoom / oldZoom);
+  state.zoom = newZoom;
+
+  clampPan();
+  applyZoom();
+  showZoomBadge();
+  dismissHint();
+}, { passive: false });
+
+// Double-click to reset zoom
+viewport.addEventListener('dblclick', e => {
+  if (e.target.closest('.slider-bar') || e.target.closest('.gallery-nav')) return;
+  if (state.zoom < 1.01) return;
+  state.zoom = 1;
+  state.panX = 0;
+  state.panY = 0;
+  imagePan.classList.add('smooth');
+  applyZoom();
+  showZoomBadge();
+  setTimeout(() => imagePan.classList.remove('smooth'), 400);
+});
+
+function clampPan() {
+  if (state.zoom <= 1) {
+    state.panX = 0;
+    state.panY = 0;
+    return;
+  }
+  const rect = viewport.getBoundingClientRect();
+  const maxPanX = rect.width * (state.zoom - 1);
+  const maxPanY = rect.height * (state.zoom - 1);
+  state.panX = Math.max(-maxPanX, Math.min(0, state.panX));
+  state.panY = Math.max(-maxPanY, Math.min(0, state.panY));
+}
+
+function updateImmersed() {
+  // Stay immersed while zoomed, clear when back to 1x
+  hud.classList.toggle('immersed', state.zoom > 1.01);
+}
+
+function applyZoom() {
+  imagePan.style.transform = `translate(${state.panX}px, ${state.panY}px) scale(${state.zoom})`;
+  viewport.style.cursor = state.zoom > 1.01 ? 'grab' : '';
+  if (state.comparing) render();
+  updateImmersed();
+}
+
+function showZoomBadge() {
+  zoomBadge.textContent = state.zoom.toFixed(1) + 'x';
+  zoomBadge.classList.toggle('visible', state.zoom > 1.01);
+  clearTimeout(zoomFadeTimer);
+  if (state.zoom <= 1.01) return;
+  zoomFadeTimer = setTimeout(() => zoomBadge.classList.remove('visible'), 2000);
+}
+
+// --------------------------------------------------------------------------
+// Keyboard
+// --------------------------------------------------------------------------
+
+function isInteractiveElement(el) {
+  return Boolean(el && el.closest('button, input, textarea, select, a, [role="slider"]'));
+}
+
+function blocksSpaceShortcut(el) {
+  if (!el) return false;
+  if (el === slider) return false;
+  return Boolean(el.closest('button, textarea, select, a, [role="slider"]'));
+}
+
+let spacePreviewRestoreFocus = null;
+let spacePreviewShouldRestoreFocus = false;
+
+function startSpacePreview() {
+  spacePreviewRestoreFocus = document.activeElement === slider ? slider : null;
+  spacePreviewShouldRestoreFocus = Boolean(spacePreviewRestoreFocus && slider.matches(':focus-visible'));
+  if (spacePreviewRestoreFocus) slider.blur();
+  slider.classList.add('space-previewing');
+  const sliderTrack = slider.closest('.slider-track');
+  sliderTrack.classList.add('space-previewing');
+  // Match Chrome's internal thumb positioning (accounts for thumb width inset)
+  const trackW = slider.offsetWidth;
+  const thumbW = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--thumb-size'));
+  const ratio = (parseInt(slider.value) + 100) / 200;
+  const thumbCenter = thumbW / 2 + ratio * (trackW - thumbW);
+  sliderTrack.style.setProperty('--preview-thumb-pos', `${thumbCenter / trackW * 100}%`);
+  canvasRight.style.opacity = '0';
+  if (state.comparing) dividerEl.style.opacity = '0';
+  dismissHint();
+}
+
+function endSpacePreview() {
+  slider.classList.remove('space-previewing');
+  slider.closest('.slider-track').classList.remove('space-previewing');
+  canvasRight.style.opacity = '';
+  dividerEl.style.opacity = '';   // clear inline style so CSS class takes over
+  if (spacePreviewRestoreFocus && spacePreviewShouldRestoreFocus) {
+    spacePreviewRestoreFocus.focus({ preventScroll: true });
+  } else if (document.activeElement === slider) {
+    slider.blur();
+    requestAnimationFrame(() => {
+      if (document.activeElement === slider) slider.blur();
+    });
+  }
+  spacePreviewRestoreFocus = null;
+  spacePreviewShouldRestoreFocus = false;
+}
+
+window.addEventListener('keydown', e => {
+  const interactiveFocus = isInteractiveElement(document.activeElement);
+  const blockSpaceShortcut = blocksSpaceShortcut(document.activeElement);
+
+  // Space = flash native
+  if (e.code === 'Space' && !e.repeat && !blockSpaceShortcut) {
+    e.preventDefault();
+    startSpacePreview();
+  }
+  // C = toggle compare
+  if (e.code === 'KeyC' && !e.repeat && !interactiveFocus) setComparing(!state.comparing);
+  // Arrow keys = gallery nav, unless another interactive control is focused
+  if (e.code === 'ArrowLeft' && !interactiveFocus) { e.preventDefault(); navigateGallery(-1); }
+  if (e.code === 'ArrowRight' && !interactiveFocus) { e.preventDefault(); navigateGallery(1); }
+});
+
+window.addEventListener('keyup', e => {
+  if (e.code === 'Space') endSpacePreview();
+});
+
+// --------------------------------------------------------------------------
+// Gallery
+// --------------------------------------------------------------------------
+
+function buildGalleryNav() {
+  if (GALLERY.length <= 1) {
+    galleryNav.classList.add('single');
+    return;
+  }
+  galleryDots.innerHTML = '';
+  GALLERY.forEach((entry, i) => {
+    const dot = document.createElement('button');
+    dot.type = 'button';
+    dot.className = 'gallery-dot' + (i === state.currentImage ? ' active' : '');
+    dot.setAttribute('aria-label', `Go to ${entry.name}`);
+    dot.setAttribute('aria-current', String(i === state.currentImage));
+    dot.addEventListener('click', e => {
+      if (e.detail > 0) e.currentTarget.blur();
+      loadGalleryImage(i);
+    });
+    galleryDots.appendChild(dot);
+  });
+  prevBtn.addEventListener('click', e => {
+    if (e.detail > 0) e.currentTarget.blur();
+    navigateGallery(-1);
+  });
+  nextBtn.addEventListener('click', e => {
+    if (e.detail > 0) e.currentTarget.blur();
+    navigateGallery(1);
+  });
+  updateGalleryDots();
+}
+
+function navigateGallery(dir) {
+  const next = state.currentImage + dir;
+  if (next < 0 || next >= GALLERY.length) return;
+  loadGalleryImage(next);
+}
+
+function updateGalleryDots() {
+  galleryDots.querySelectorAll('.gallery-dot').forEach((dot, i) => {
+    dot.classList.toggle('active', i === state.currentImage);
+    dot.setAttribute('aria-current', String(i === state.currentImage));
+  });
+  prevBtn.disabled = state.currentImage === 0;
+  nextBtn.disabled = state.currentImage === GALLERY.length - 1;
+  prevBtn.setAttribute('aria-disabled', String(prevBtn.disabled));
+  nextBtn.setAttribute('aria-disabled', String(nextBtn.disabled));
+}
+
+// --------------------------------------------------------------------------
+// Image loading + merge pipeline
+// --------------------------------------------------------------------------
+
+function restoreFromCache(c) {
+  state.origPixels = c.origPixels;
+  state.dlssPixels = c.dlssPixels;
+  state.mergedPixels = c.mergedPixels;
+  state.imgW = c.imgW;
+  state.imgH = c.imgH;
+  state.bmpOrig = c.bmpOrig;
+  state.bmpMerged = c.bmpMerged;
+  state.bmpDlss = c.bmpDlss;
+}
+
+function isStaleLoad(gen) {
+  return gen !== loadGeneration;
+}
+
+function setRetryVisible(visible) {
+  retryButton.hidden = !visible;
+}
+
+function showWorkerFailure(message) {
+  slider.disabled = true;
+  loadingBar.style.width = '0%';
+  loadingText.textContent = message;
+  setRetryVisible(true);
+  loadingOverlay.classList.remove('hidden');
+  updateSliderLabel();
+}
+
+retryButton.addEventListener('click', () => {
+  setRetryVisible(false);
+  loadGalleryImage(state.currentImage);
+});
+
+// Crossfade: fade out, run callback, fade back in
+async function crossfade(fn) {
+  // Fade out
+  imagePan.style.transition = 'opacity 120ms ease-out';
+  imagePan.style.opacity = '0';
+  await new Promise(r => setTimeout(r, 120));
+
+  await fn();
+  await new Promise(r => requestAnimationFrame(r));
+
+  // Fade in
+  imagePan.style.transition = 'opacity 120ms ease-in';
+  imagePan.style.opacity = '1';
+  setTimeout(() => { imagePan.style.transition = ''; }, 150);
+}
+
+async function loadGallerySources(index) {
+  const entry = GALLERY[index];
+  const basePath = entry.path;
+  const [origImg, dlssImg] = await Promise.all([
+    loadImage(`${basePath}/${entry.original}`),
+    loadImage(`${basePath}/${entry.dlss}`),
+  ]);
+  const imgW = origImg.naturalWidth, imgH = origImg.naturalHeight;
+  return {
+    imgW, imgH,
+    origPixels: getPixels(origImg),
+    dlssPixels: getPixels(dlssImg),
+  };
+}
+
+async function runMergeWorker(origPixels, dlssPixels, imgW, imgH) {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker('worker.js');
+    const oBuf = origPixels.data.buffer.slice(0);
+    const dBuf = dlssPixels.data.buffer.slice(0);
+
+    worker.postMessage({
+      type: 'compute-merge',
+      origBuffer: oBuf,
+      dlssBuffer: dBuf,
+      width: imgW, height: imgH,
+    }, [oBuf, dBuf]);
+
+    worker.onmessage = (e) => {
+      if (e.data.type === 'merge-done') {
+        const px = new Uint8ClampedArray(e.data.buffer);
+        resolve(new ImageData(px, imgW, imgH));
+        worker.terminate();
+      }
+    };
+    worker.onerror = (err) => { worker.terminate(); reject(err); };
+  });
+}
+
+// Compute merge for a given gallery index, returns cache entry (doesn't touch state)
+async function computeMergeForIndex(index) {
+  const { imgW, imgH, origPixels, dlssPixels } = await loadGallerySources(index);
+  const mergedPixels = await runMergeWorker(origPixels, dlssPixels, imgW, imgH);
+
+  const [bmpOrig, bmpMerged, bmpDlss] = await Promise.all([
+    toBitmap(origPixels),
+    toBitmap(mergedPixels),
+    toBitmap(dlssPixels),
+  ]);
+
+  const cacheEntry = {
+    origPixels, dlssPixels, mergedPixels,
+    imgW, imgH, bmpOrig, bmpMerged, bmpDlss,
+  };
+
+  // Save merged buffer to IndexedDB (source images are browser-cached)
+  dbPut(`merge-${index}`, {
+    mergedArray: new Uint8ClampedArray(mergedPixels.data),
+    imgW, imgH,
+  });
+
+  return cacheEntry;
+}
+
+async function computePersistedMergeForIndex(index, token) {
+  const { imgW, imgH, origPixels, dlssPixels } = await loadGallerySources(index);
+  if (token !== preloadToken) return false;
+  const mergedPixels = await runMergeWorker(origPixels, dlssPixels, imgW, imgH);
+  if (token !== preloadToken) return false;
+  await dbPut(`merge-${index}`, {
+    mergedArray: new Uint8ClampedArray(mergedPixels.data),
+    imgW, imgH,
+  });
+  return true;
+}
+
+function evictDistantCache(currentIndex) {
+  // Keep current + adjacent, evict everything else
+  const keep = new Set([currentIndex, currentIndex - 1, currentIndex + 1]);
+  for (const key of Object.keys(mergeCache)) {
+    if (!keep.has(Number(key))) {
+      closeCacheEntry(mergeCache[key]);
+      delete mergeCache[key];
+    }
+  }
+}
+
+async function loadGalleryImage(index) {
+  // Cancel any in-flight worker from a previous image
+  if (activeWorker) { activeWorker.terminate(); activeWorker = null; }
+  cancelScheduledPreload();
+  const gen = ++loadGeneration;
+  const previousIndex = state.currentImage;
+  if (!mergeCache[previousIndex]) disposeStateBitmaps();
+
+  state.ready = false;
+  state.mergeReady = false;
+  state.mergedPixels = null;
+  state.bmpMerged = null;
+  state.currentImage = index;
+  updateGalleryDots();
+  evictDistantCache(index);
+  slider.disabled = true;
+  updateSliderLabel();
+
+  state.zoom = 1; state.panX = 0; state.panY = 0;
+  applyZoom();
+
+  // 1. Check in-memory cache
+  if (mergeCache[index]) {
+    await crossfade(async () => {
+      if (isStaleLoad(gen)) return;
+      restoreFromCache(mergeCache[index]);
+      state.mergeReady = true;
+      layout();
+      slider.disabled = false;
+      updateSliderLabel();
+      state.ready = true;
+      setRetryVisible(false);
+      loadingOverlay.classList.add('hidden');
+      render();
+    });
+    if (isStaleLoad(gen)) return;
+    return;
+  }
+
+  // 2. Check IndexedDB
+  const entry = GALLERY[index];
+  const basePath = entry.path;
+  const persisted = await dbGet(`merge-${index}`);
+  if (isStaleLoad(gen)) return;
+
+  if (persisted) {
+    try {
+      const [origImg, dlssImg] = await Promise.all([
+        loadImage(`${basePath}/${entry.original}`),
+        loadImage(`${basePath}/${entry.dlss}`),
+      ]);
+      if (isStaleLoad(gen)) return;
+
+      const origPixels = getPixels(origImg);
+      const dlssPixels = getPixels(dlssImg);
+      const mergedPixels = new ImageData(
+        new Uint8ClampedArray(persisted.mergedArray),
+        persisted.imgW, persisted.imgH
+      );
+      const [bmpOrig, bmpMerged, bmpDlss] = await Promise.all([
+        toBitmap(origPixels),
+        toBitmap(mergedPixels),
+        toBitmap(dlssPixels),
+      ]);
+      if (isStaleLoad(gen)) {
+        bmpOrig.close();
+        bmpMerged.close();
+        bmpDlss.close();
+        return;
+      }
+
+      const cacheEntry = {
+        origPixels, dlssPixels, mergedPixels,
+        imgW: persisted.imgW, imgH: persisted.imgH,
+        bmpOrig, bmpMerged, bmpDlss,
+      };
+      mergeCache[index] = cacheEntry;
+
+      await crossfade(async () => {
+        if (isStaleLoad(gen)) return;
+        restoreFromCache(cacheEntry);
+        state.mergeReady = true;
+        layout();
+        slider.disabled = false;
+        updateSliderLabel();
+        state.ready = true;
+        setRetryVisible(false);
+        loadingOverlay.classList.add('hidden');
+        render();
+      });
+      if (isStaleLoad(gen)) return;
+      scheduleAdjacentPreload(index);
+      return;
+    } catch { /* fall through to full compute */ }
+  }
+
+  // 3. Full compute - show DLSS image immediately while merge runs
+  loadingBar.style.width = '0%';
+  loadingText.textContent = 'Preparing comparison…';
+  setRetryVisible(false);
+  loadingOverlay.classList.remove('hidden');
+
+  try {
+    const [origImg, dlssImg] = await Promise.all([
+      loadImage(`${basePath}/${entry.original}`),
+      loadImage(`${basePath}/${entry.dlss}`),
+    ]);
+    if (isStaleLoad(gen)) return;
+
+    state.imgW = origImg.naturalWidth;
+    state.imgH = origImg.naturalHeight;
+    state.origPixels = getPixels(origImg);
+    state.dlssPixels = getPixels(dlssImg);
+
+    layout();
+
+    // Show the image right away with DLSS as placeholder
+    const [bmpOrig, bmpDlss] = await Promise.all([
+      toBitmap(state.origPixels),
+      toBitmap(state.dlssPixels),
+    ]);
+    if (isStaleLoad(gen)) {
+      bmpOrig.close();
+      bmpDlss.close();
+      return;
+    }
+    state.bmpOrig = bmpOrig;
+    state.bmpDlss = bmpDlss;
+    state.ready = true;
+    updateSliderLabel();
+    loadingOverlay.classList.add('hidden');
+    render();
+
+    loadingBar.style.width = '20%';
+
+    const worker = new Worker('worker.js');
+    activeWorker = worker;
+    const origBuf = state.origPixels.data.buffer.slice(0);
+    const dlssBuf = state.dlssPixels.data.buffer.slice(0);
+
+    worker.postMessage({
+      type: 'compute-merge',
+      origBuffer: origBuf,
+      dlssBuffer: dlssBuf,
+      width: state.imgW,
+      height: state.imgH,
+    }, [origBuf, dlssBuf]);
+
+    worker.onmessage = async (e) => {
+      // Stale worker from a previous image - discard
+      if (gen !== loadGeneration) { worker.terminate(); return; }
+
+      if (e.data.type === 'progress') {
+        loadingBar.style.width = `${20 + e.data.pct * 0.8}%`;
+      }
+      if (e.data.type === 'merge-done') {
+        const px = new Uint8ClampedArray(e.data.buffer);
+        state.mergedPixels = new ImageData(px, state.imgW, state.imgH);
+        const mergedBitmap = await toBitmap(state.mergedPixels);
+        if (gen !== loadGeneration) {
+          mergedBitmap.close();
+          worker.terminate();
+          return;
+        }
+        state.bmpMerged = mergedBitmap;
+        state.mergeReady = true;
+        slider.disabled = false;
+        updateSliderLabel();
+
+        mergeCache[index] = {
+          origPixels: state.origPixels, dlssPixels: state.dlssPixels,
+          mergedPixels: state.mergedPixels,
+          imgW: state.imgW, imgH: state.imgH,
+          bmpOrig: state.bmpOrig, bmpMerged: state.bmpMerged, bmpDlss: state.bmpDlss,
+        };
+
+        dbPut(`merge-${index}`, {
+          mergedArray: new Uint8ClampedArray(state.mergedPixels.data),
+          imgW: state.imgW, imgH: state.imgH,
+        });
+
+        setRetryVisible(false);
+        loadingOverlay.classList.add('hidden');
+        render();
+        worker.terminate();
+        activeWorker = null;
+
+        scheduleAdjacentPreload(index);
+      }
+    };
+
+    worker.onerror = (err) => {
+      showWorkerFailure('Lighting Only failed to render. Retry?');
+      console.error(err);
+      worker.terminate();
+      activeWorker = null;
+    };
+  } catch (err) {
+    showWorkerFailure('Comparison failed to load. Retry?');
+    console.error(err);
+  }
+}
+
+// Background preload: warm adjacent images in memory first, then opportunistically
+// persist the rest of the gallery during idle time without keeping them hot in RAM.
+let preloading = false;
+let preloadToken = 0;
+let preloadIdleHandle = null;
+let queuedPreloadRequest = null;
+
+function cancelScheduledPreload() {
+  if (preloadIdleHandle == null) return;
+  if ('cancelIdleCallback' in window) cancelIdleCallback(preloadIdleHandle);
+  else clearTimeout(preloadIdleHandle);
+  preloadIdleHandle = null;
+}
+
+function scheduleAdjacentPreload(loadedIndex) {
+  cancelScheduledPreload();
+  const token = ++preloadToken;
+  const run = async () => {
+    preloadIdleHandle = null;
+    if (token !== preloadToken) return;
+    await preloadAdjacent(loadedIndex, token);
+  };
+  if ('requestIdleCallback' in window) preloadIdleHandle = requestIdleCallback(run, { timeout: 1200 });
+  else preloadIdleHandle = setTimeout(run, 300);
+}
+
+function shouldWarmDistantImages() {
+  const connection = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+  if (document.hidden) return false;
+  if (connection?.saveData) return false;
+  return true;
+}
+
+async function waitForWarmupIdle(token, timeout = 1400) {
+  if (token !== preloadToken || !shouldWarmDistantImages()) return false;
+  return new Promise(resolve => {
+    const complete = () => resolve(token === preloadToken && shouldWarmDistantImages());
+    if ('requestIdleCallback' in window) requestIdleCallback(() => complete(), { timeout });
+    else setTimeout(complete, 300);
+  });
+}
+
+async function warmDistantImages(loadedIndex, token) {
+  if (!shouldWarmDistantImages()) return;
+  const hotSet = new Set([loadedIndex, loadedIndex - 1, loadedIndex + 1]);
+  for (let i = 0; i < GALLERY.length; i++) {
+    if (token !== preloadToken) return;
+    if (hotSet.has(i) || mergeCache[i]) continue;
+    const persisted = await dbGet(`merge-${i}`);
+    if (token !== preloadToken || persisted) continue;
+    const canRun = await waitForWarmupIdle(token);
+    if (!canRun) return;
+    try {
+      await computePersistedMergeForIndex(i, token);
+    } catch (err) {
+      console.warn(`Warmup failed for image ${i}:`, err);
+    }
+  }
+}
+
+async function preloadAdjacent(loadedIndex, token) {
+  if (token !== preloadToken) return;
+  if (preloading) {
+    queuedPreloadRequest = { loadedIndex, token };
+    return;
+  }
+  preloading = true;
+
+  try {
+    const adjacent = [loadedIndex - 1, loadedIndex + 1].filter(i => i >= 0 && i < GALLERY.length && !mergeCache[i]);
+    await Promise.all(adjacent.map(async i => {
+      try {
+        if (token !== preloadToken) return;
+        const persisted = await dbGet(`merge-${i}`);
+        if (token !== preloadToken || persisted) return;
+        const cacheEntry = await computeMergeForIndex(i);
+        if (token !== preloadToken) {
+          closeCacheEntry(cacheEntry);
+          return;
+        }
+        mergeCache[i] = cacheEntry;
+      } catch (err) {
+        console.warn(`Preload failed for image ${i}:`, err);
+      }
+    }));
+    if (token === preloadToken) await warmDistantImages(loadedIndex, token);
+  } finally {
+    preloading = false;
+    const pending = queuedPreloadRequest;
+    queuedPreloadRequest = null;
+    if (pending && pending.token === preloadToken) {
+      await preloadAdjacent(pending.loadedIndex, pending.token);
+    }
+  }
+}
+
+// --------------------------------------------------------------------------
+// Hint
+// --------------------------------------------------------------------------
+
+let hintDismissed = false;
+function dismissHint() {
+  if (!hintDismissed) {
+    hintDismissed = true;
+    hint.classList.add('hidden');
+  }
+}
+// Auto-fade desktop hint after 4s; keep touch hint until the user interacts
+if (!prefersCoarsePointer) setTimeout(dismissHint, 4000);
+
+// --------------------------------------------------------------------------
+// Init
+// --------------------------------------------------------------------------
+
+dividerHandle.setAttribute('role', 'slider');
+dividerHandle.setAttribute('aria-label', 'Comparison divider');
+dividerHandle.setAttribute('aria-valuemin', '0');
+dividerHandle.setAttribute('aria-valuemax', '100');
+dividerHandle.setAttribute('aria-valuenow', '50');
+dividerHandle.setAttribute('aria-hidden', 'true');
+dividerHandle.tabIndex = -1;
+dividerHandle.addEventListener('keydown', e => {
+  if (!state.comparing) return;
+  const step = e.shiftKey ? 10 : 2;
+  if (e.code === 'ArrowLeft') {
+    e.preventDefault();
+    state.splitPos = Math.max(0, state.splitPos - step / 100);
+    dividerHandle.setAttribute('aria-valuenow', String(Math.round(state.splitPos * 100)));
+    render();
+  }
+  if (e.code === 'ArrowRight') {
+    e.preventDefault();
+    state.splitPos = Math.min(1, state.splitPos + step / 100);
+    dividerHandle.setAttribute('aria-valuenow', String(Math.round(state.splitPos * 100)));
+    render();
+  }
+});
+
+window.addEventListener('beforeunload', () => {
+  cancelScheduledPreload();
+  if (activeWorker) activeWorker.terminate();
+  Object.values(mergeCache).forEach(closeCacheEntry);
+  if (!mergeCache[state.currentImage]) disposeStateBitmaps();
+});
+
+buildGalleryNav();
+loadGalleryImage(0);
+</script>
+</body>
+</html>
